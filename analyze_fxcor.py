@@ -3,9 +3,10 @@ import glob
 import pandas as pd
 from tqdm import *
 import matplotlib.gridspec as gridspec
-from astropy.io.fits import getval, getheader, getdata
 from matplotlib import rc
 import utilities 
+from scipy.ndimage.filters import gaussian_filter 
+from astropy.io import fits
 
 #rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
 #rc('text', usetex=True)
@@ -13,9 +14,8 @@ import utilities
 fmatch = pd.read_table('/Volumes/VINCE/OAC/master_adp_ugri_clean.txt', delim_whitespace = True)
 fmatch = fmatch.replace((-9999.0, -8888.0), np.nan)
 
-def change_name(list, suff):
-  names = [list[i].split('/')[-1] for i in range(len(list))]
-  return [names[i].split('.')[0] + suff for i in range(len(list))]
+# - - - - - - - - - - - - - - - - - - - - - - - 
+# - - - - - - - - - - - - - - - - - - - - - - - 
 
 def mad(points, thresh=3.5):
     if len(points.shape) == 1:
@@ -28,6 +28,7 @@ def mad(points, thresh=3.5):
     modified_z_score = 0.6745 * diff / med_abs_deviation
     return modified_z_score > thresh
 
+# - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
 def fxcor_subplot(result):
@@ -70,13 +71,16 @@ def fxcor_subplot(result):
                                  color='black', histtype='step')
         return fig
 
+# - - - - - - - - - - - - - - - - - - - - - - - 
+# - - - - - - - - - - - - - - - - - - - - - - - 
+
 def fetchfrom_fits(fitsfile):
         '''
         Open the fits header. Gets the S/N, the SG parameter
         and calculate the heliocentric velocity. 
         Returns a tuple. 
         '''
-        header = getheader(fitsfile, hdu = 0)
+        header = fits.getheader(fitsfile, hdu = 0)
         SN1 = header['SN1']
         SG = header['sg_norm']
         SN2 = header['SN2']
@@ -88,7 +92,7 @@ def fetchfrom_fits(fitsfile):
         return output
 
 # - - - - - - - - - - - - - - - - - - - - - - - 
-
+# - - - - - - - - - - - - - - - - - - - - - - - 
 
 def get_fresult(filename, fmatch):
 
@@ -165,6 +169,92 @@ def get_fresult(filename, fmatch):
 # - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
+def plot_spectrum(result):
+    
+    plt.close('all')
+    plt.ioff()
+    hdu = fits.open(result['ORIGINALFILE'])
+    galaxy = gaussian_filter(hdu[1].data, 1)
+    thumbnail = hdu['THUMBNAIL'].data
+    twoD = hdu['2D'].data
+    header = hdu[0].header
+    header1 = hdu[1].header
+    hdu.close()
+
+    lamRange = header1['CRVAL1']  + np.array([0., header1['CD1_1'] * (header1['NAXIS1'] - 1)]) 
+
+    zp = 1 + (result['VREL'] / 299792.458)
+
+    wavelength = np.linspace(lamRange[0],lamRange[1], header1['NAXIS1']) / zp
+
+    ymin = np.min(galaxy)
+    ymax = np.max(galaxy)
+    ylim = [ymin, ymax] + np.array([-0.02, 0.1])*(ymax-ymin)
+    ylim[0] = 0.
+
+    xmin = np.min(wavelength)
+    xmax = np.max(wavelength)
+
+    ### Define multipanel size and properties
+    fig = plt.figure(figsize=[9,4])
+    gs = gridspec.GridSpec(100,130,bottom=0.15,left=0.15,right=0.95)
+
+    ### Plot the object in the sky
+    ax_obj = fig.add_subplot(gs[0:30,105:125])
+    
+    ax_obj.imshow(thumbnail, cmap = 'gray', interpolation = 'nearest')
+    ax_obj.set_xticks([]) 
+    ax_obj.set_yticks([]) 
+
+    ### Plot the 2D spectrum
+    ax_2d = fig.add_subplot(gs[0:11,0:99])
+
+    ix_start = header['START_{}'.format(int(result['DETECT']))]
+    ix_end = header['END_{}'.format(int(result['DETECT']))]
+
+    ax_2d.imshow(twoD[:, :], cmap='spectral',
+                aspect = "auto", origin = 'lower', extent=[xmin,xmax,0,1], 
+                vmin = -0.2, vmax=0.2) 
+    ax_2d.set_xticks([]) 
+    ax_2d.set_yticks([]) 
+
+    #### Plot the masked regions
+    ax_spectrum = fig.add_subplot(gs[11:85,0:99])
+
+    ### Plot some atomic lines                                    
+    line_wave = [4861., 5175., 5892., 6562.8, 8498., 8542., 8662.]
+    #line_label1 = ['Halpha', 'NaD', 'Mgb', 'CaT', 'CaT', 'CaT']
+
+    for i in range(len(line_wave)):
+        x = [line_wave[i], line_wave[i]]
+        y = [ylim[0], ylim[1]]
+        ax_spectrum.plot(x, y, c= 'gray', linewidth=1.0)
+
+    ### Plot the spectrum and the bestfit
+    ax_spectrum.plot(wavelength, galaxy, 'k', linewidth=1.3)
+    
+    ### Define plot boundaries
+    ax_spectrum.set_ylim(ylim)
+    ax_spectrum.set_xlim([xmin,xmax])
+    ax_spectrum.set_ylabel(r'Arbitrary Flux')
+
+    ax_spectrum.set_xlabel(r'Restframe Wavelength [ $\AA$ ]')
+    #plt.setp(ax_spectrum.get_xticklabels(), visible=False)
+   
+    textplot = fig.add_subplot(gs[40:100,105:130 ])
+    textplot.text(0.1, 1.0,r'ID = {}_{}'.format(result.ID, int(result.DETECT)), va="center", ha="left", size = 'smaller')
+    textplot.text(0.1, 0.9,r'$v =$ {}'.format(int(result.VREL)), va="center", ha="left", size = 'smaller')
+    textplot.text(0.1, 0.8,r'$\delta = $ {}'.format(int(result.VERR)), va="center", ha="left", size = 'smaller')
+    textplot.text(0.1, 0.7,r'SN1 = {0:.2f}'.format(result.SN1), va="center", ha="left", size = 'smaller')
+    textplot.text(0.1, 0.6,r'TDR = {0:.2f}'.format(result.TDR), va="center", ha="left", size = 'smaller')
+    textplot.text(0.1, 0.5,r'SG = {}'.format(result.SG), va="center", ha="left", size = 'smaller')
+    textplot.axis('off')
+ 
+    return fig
+
+# - - - - - - - - - - - - - - - - - - - - - - - 
+# - - - - - - - - - - - - - - - - - - - - - - - 
+
 result = get_fresult('teretere.txt', fmatch)
 
 tmp = result.copy()
@@ -176,6 +266,11 @@ GCs = tmp[(tmp['VREL'] > 550) &
              ((tmp['g_auto'] - tmp['i_auto']) < 2.) &
              ((tmp['g_auto'] - tmp['i_auto']) > 0.) & 
              (tmp['i_auto'] > 19.)].reset_index(drop = True)
+
+for i in range(0,len(GCs)):
+  fig = plot_spectrum(GCs.iloc[i])
+  fig.savefig('/Volumes/VINCE/OAC/spectra/{}_{}.png'.format(GCs.ID.iloc[i],GCs.DETECT.iloc[i]), dpi = 200)
+
 
 iraf.onedspec()
 for i in tqdm.tqdm(range(0,len(GCs))):
