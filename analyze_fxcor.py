@@ -182,74 +182,83 @@ def plot_spectrum(result):
     hdu.close()
 
     lamRange = header1['CRVAL1']  + np.array([0., header1['CD1_1'] * (header1['NAXIS1'] - 1)]) 
-
     zp = 1 + (result['VREL'] / 299792.458)
-
     wavelength = np.linspace(lamRange[0],lamRange[1], header1['NAXIS1']) / zp
 
-    ymin = np.min(galaxy)
-    ymax = np.max(galaxy)
+    ymin, ymax = np.min(galaxy), np.max(galaxy)
     ylim = [ymin, ymax] + np.array([-0.02, 0.1])*(ymax-ymin)
     ylim[0] = 0.
 
-    xmin = np.min(wavelength)
-    xmax = np.max(wavelength)
+    xmin, xmax = np.min(wavelength), np.max(wavelength)
 
     ### Define multipanel size and properties
-    fig = plt.figure(figsize=[9,4])
-    gs = gridspec.GridSpec(100,130,bottom=0.15,left=0.15,right=0.95)
+    fig = plt.figure(figsize=(8,6))
+    gs = gridspec.GridSpec(200,130,bottom=0.10,left=0.10,right=0.95)
 
     ### Plot the object in the sky
-    ax_obj = fig.add_subplot(gs[0:30,105:125])
-    
+    ax_obj = fig.add_subplot(gs[0:70,105:130])
     ax_obj.imshow(thumbnail, cmap = 'gray', interpolation = 'nearest')
     ax_obj.set_xticks([]) 
     ax_obj.set_yticks([]) 
 
     ### Plot the 2D spectrum
-    ax_2d = fig.add_subplot(gs[0:11,0:99])
-
+    ax_2d = fig.add_subplot(gs[0:11,0:100])
     ix_start = header['START_{}'.format(int(result['DETECT']))]
     ix_end = header['END_{}'.format(int(result['DETECT']))]
-
-    ax_2d.imshow(twoD[:, :], cmap='spectral',
-                aspect = "auto", origin = 'lower', extent=[xmin,xmax,0,1], 
+    ax_2d.imshow(twoD, cmap='spectral',
+                aspect = "auto", origin = 'lower', extent=[xmin, xmax, 0, 1], 
                 vmin = -0.2, vmax=0.2) 
     ax_2d.set_xticks([]) 
     ax_2d.set_yticks([]) 
-
-    #### Plot the masked regions
-    ax_spectrum = fig.add_subplot(gs[11:85,0:99])
-
-    ### Plot some atomic lines                                    
-    line_wave = [4861., 5175., 5892., 6562.8, 8498., 8542., 8662.]
-    #line_label1 = ['Halpha', 'NaD', 'Mgb', 'CaT', 'CaT', 'CaT']
-
+    
+    ### Add spectra subpanels
+    ax_spectrum = fig.add_subplot(gs[11:85,0:100])
+    ax_blue = fig.add_subplot(gs[110:200,0:50])
+    ax_red = fig.add_subplot(gs[110:200,51:100])
+    
+    ### Plot some atomic lines  
+    line_wave = [4861., 5175., 5892., 6562.8, 8498., 8542., 8662.] 
+    #           ['Hbeta', 'Mgb', 'NaD', 'Halpha', 'CaT', 'CaT', 'CaT']
     for i in range(len(line_wave)):
         x = [line_wave[i], line_wave[i]]
         y = [ylim[0], ylim[1]]
         ax_spectrum.plot(x, y, c= 'gray', linewidth=1.0)
+        ax_blue.plot(x, y, c= 'gray', linewidth=1.0)
+        ax_red.plot(x, y, c= 'gray', linewidth=1.0)
 
-    ### Plot the spectrum and the bestfit
+    ### Plot the spectrum 
     ax_spectrum.plot(wavelength, galaxy, 'k', linewidth=1.3)
-    
-    ### Define plot boundaries
     ax_spectrum.set_ylim(ylim)
     ax_spectrum.set_xlim([xmin,xmax])
     ax_spectrum.set_ylabel(r'Arbitrary Flux')
-
     ax_spectrum.set_xlabel(r'Restframe Wavelength [ $\AA$ ]')
-    #plt.setp(ax_spectrum.get_xticklabels(), visible=False)
-   
-    textplot = fig.add_subplot(gs[40:100,105:130 ])
-    textplot.text(0.1, 1.0,r'ID = {}_{}'.format(result.ID, int(result.DETECT)), va="center", ha="left", size = 'smaller')
-    textplot.text(0.1, 0.9,r'$v =$ {}'.format(int(result.VREL)), va="center", ha="left", size = 'smaller')
-    textplot.text(0.1, 0.8,r'$\delta = $ {}'.format(int(result.VERR)), va="center", ha="left", size = 'smaller')
-    textplot.text(0.1, 0.7,r'SN1 = {0:.2f}'.format(result.SN1), va="center", ha="left", size = 'smaller')
-    textplot.text(0.1, 0.6,r'TDR = {0:.2f}'.format(result.TDR), va="center", ha="left", size = 'smaller')
-    textplot.text(0.1, 0.5,r'SG = {}'.format(result.SG), va="center", ha="left", size = 'smaller')
+    
+    ### Plot blue part of the spectrum
+    x1, x2 = 300, 750 
+    ax_blue.plot(wavelength[x1:x2], galaxy[x1:x2], 'k', linewidth=1.3)
+    ax_blue.set_xlim(wavelength[x1],wavelength[x2])
+    ax_blue.set_ylim(galaxy[x1:x2].min(), galaxy[x1:x2].max())
+    ax_blue.set_yticks([]) 
+    
+    ### Plot red part of the spectrum
+    x1, x2 = 1400, 1500
+    ax_red.plot(wavelength[x1:x2], galaxy[x1:x2], 'k', linewidth=1.3)
+    ax_red.set_xlim(wavelength[x1],wavelength[x2])
+    ax_red.set_ylim(galaxy[x1:x2].min(), galaxy[x1:x2].max())
+    ax_red.set_yticks([]) 
+
+    ### Plot text
+    textplot = fig.add_subplot(gs[80:200,105:130])
+    kwarg = {'va' : 'center', 'ha' : 'left', 'size' : 'medium'}
+    textplot.text(0.1, 1.0,r'ID = {}_{}'.format(result.ID, int(result.DETECT)),**kwarg)
+    textplot.text(0.1, 0.9,r'$v =$ {}'.format(int(result.VREL)), **kwarg)
+    textplot.text(0.1, 0.8,r'$\delta \, v = $ {}'.format(int(result.VERR)), **kwarg)
+    textplot.text(0.1, 0.7,r'SN1 = {0:.2f}'.format(result.SN1), **kwarg)
+    textplot.text(0.1, 0.6,r'SN2 = {0:.2f}'.format(result.SN2), **kwarg)
+    textplot.text(0.1, 0.5,r'TDR = {0:.2f}'.format(result.TDR), **kwarg)
+    textplot.text(0.1, 0.4,r'SG = {}'.format(result.SG), **kwarg)
     textplot.axis('off')
- 
+
     return fig
 
 # - - - - - - - - - - - - - - - - - - - - - - - 
@@ -270,14 +279,6 @@ GCs = tmp[(tmp['VREL'] > 550) &
 for i in range(0,len(GCs)):
   fig = plot_spectrum(GCs.iloc[i])
   fig.savefig('/Volumes/VINCE/OAC/spectra/{}_{}.png'.format(GCs.ID.iloc[i],GCs.DETECT.iloc[i]), dpi = 200)
-
-
-iraf.onedspec()
-for i in tqdm.tqdm(range(0,len(GCs))):
-    f = '/Volumes/VINCE/OAC/extracted_new/' + str(GCs.ID[i]) + '_' +str(int(GCs.DETECT[i])) + '.fits[1]'
-    output = '/Volumes/VINCE/OAC/fxcor/datad/' + str(GCs.ID[i]) + '_' +str(int(GCs.DETECT[i])) + '_z.fits'
-    iraf.onedspec.dopcor(input = f, output = output, redshift = str(GCs.VREL[i]), 
-                         isvelocity = 'yes', dispersion = 'yes')
 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
