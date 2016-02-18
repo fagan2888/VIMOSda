@@ -5,6 +5,7 @@ from tqdm import *
 import matplotlib.gridspec as gridspec
 from astropy.io.fits import getval, getheader, getdata
 from matplotlib import rc
+import utilities 
 
 #rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
 #rc('text', usetex=True)
@@ -30,6 +31,10 @@ def mad(points, thresh=3.5):
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
 def fxcor_subplot(result):
+        '''
+        Makes subplot of TDR vs VERR and VREL.
+        Returns a figure object
+        '''
         plt.close('all')
         fig = plt.figure(figsize=(6,6))
         gs = gridspec.GridSpec(70,40,bottom=0.10,left=0.15,right=0.98, top = 0.95)
@@ -65,7 +70,25 @@ def fxcor_subplot(result):
                                  color='black', histtype='step')
         return fig
 
+def fetchfrom_fits(fitsfile):
+        '''
+        Open the fits header. Gets the S/N, the SG parameter
+        and calculate the heliocentric velocity. 
+        Returns a tuple. 
+        '''
+        header = getheader(fitsfile, hdu = 0)
+        SN1 = header['SN1']
+        SG = header['sg_norm']
+        SN2 = header['SN2']
+
+        vhelio = utilities.get_vhelio(header)
+
+        output = [SN1, SN2, SG, vhelio]
+
+        return output
+
 # - - - - - - - - - - - - - - - - - - - - - - - 
+
 
 def get_fresult(filename, fmatch):
 
@@ -128,8 +151,12 @@ def get_fresult(filename, fmatch):
                                         })
   
           result = pd.merge(grouped, fmatch, on = ['ID'])
-          result['SN1'] = result['ORIGINALFILE'].map(lambda x: getval(x, 'SN1'))
-          result['SG'] = result['ORIGINALFILE'].map(lambda x: getval(x, 'sg_norm'))
+
+          toadd = np.array(map(lambda x: fetchfrom_fits(x), result['ORIGINALFILE']))
+          result['SN1'] = toadd[:,0]
+          result['SN2'] = toadd[:,1]
+          result['SG'] = toadd[:,2] 
+          result['vhelio'] = toadd[:,2]
           
           resultClean = result[np.isfinite(result['RA_g'])]
 
