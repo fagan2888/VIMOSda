@@ -7,6 +7,9 @@ from matplotlib import rc
 import utilities 
 from scipy.ndimage.filters import gaussian_filter 
 from astropy.io import fits
+from pyraf import iraf
+import os
+iraf.noao()
 
 #rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
 #rc('text', usetex=True)
@@ -160,7 +163,9 @@ def get_fresult(filename, fmatch):
           result['SN1'] = toadd[:,0]
           result['SN2'] = toadd[:,1]
           result['SG'] = toadd[:,2] 
-          result['vhelio'] = toadd[:,2]
+          result['vhelio'] = toadd[:,3]
+
+          result['VREL_helio'] = result['VREL'] + result['vhelio']
           
           resultClean = result[np.isfinite(result['RA_g'])]
 
@@ -169,10 +174,14 @@ def get_fresult(filename, fmatch):
 # - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
-def plot_spectrum(result):
+def plot_spectrum(result, correct = True, interactive = False):
     
     plt.close('all')
     plt.ioff()
+
+    if interactive:
+      plt.ion()
+
     hdu = fits.open(result['ORIGINALFILE'])
     galaxy = gaussian_filter(hdu[1].data, 1)
     thumbnail = hdu['THUMBNAIL'].data
@@ -182,9 +191,13 @@ def plot_spectrum(result):
     hdu.close()
 
     lamRange = header1['CRVAL1']  + np.array([0., header1['CD1_1'] * (header1['NAXIS1'] - 1)]) 
-    zp = 1 + (result['VREL'] / 299792.458)
-    wavelength = np.linspace(lamRange[0],lamRange[1], header1['NAXIS1']) / zp
+    
+    if correct:
+      zp = 1. + (result['VREL'] / 299792.458)
+    else:
+      zp = 1.
 
+    wavelength = np.linspace(lamRange[0],lamRange[1], header1['NAXIS1']) / zp
     ymin, ymax = np.min(galaxy), np.max(galaxy)
     ylim = [ymin, ymax] + np.array([-0.02, 0.1])*(ymax-ymin)
     ylim[0] = 0.
@@ -248,23 +261,24 @@ def plot_spectrum(result):
     ax_red.set_yticks([]) 
 
     ### Plot text
-    textplot = fig.add_subplot(gs[80:200,105:130])
-    kwarg = {'va' : 'center', 'ha' : 'left', 'size' : 'medium'}
-    textplot.text(0.1, 1.0,r'ID = {}_{}'.format(result.ID, int(result.DETECT)),**kwarg)
-    textplot.text(0.1, 0.9,r'$v =$ {}'.format(int(result.VREL)), **kwarg)
-    textplot.text(0.1, 0.8,r'$\delta \, v = $ {}'.format(int(result.VERR)), **kwarg)
-    textplot.text(0.1, 0.7,r'SN1 = {0:.2f}'.format(result.SN1), **kwarg)
-    textplot.text(0.1, 0.6,r'SN2 = {0:.2f}'.format(result.SN2), **kwarg)
-    textplot.text(0.1, 0.5,r'TDR = {0:.2f}'.format(result.TDR), **kwarg)
-    textplot.text(0.1, 0.4,r'SG = {}'.format(result.SG), **kwarg)
-    textplot.axis('off')
+    if interactive:
+        textplot = fig.add_subplot(gs[80:200,105:130])
+        kwarg = {'va' : 'center', 'ha' : 'left', 'size' : 'medium'}
+        textplot.text(0.1, 1.0,r'ID = {} \, {}'.format(result.ID, int(result.DETECT)),**kwarg)
+        textplot.text(0.1, 0.9,r'$v =$ {}'.format(int(result.VREL)), **kwarg)
+        textplot.text(0.1, 0.8,r'$\delta \, v = $ {}'.format(int(result.VERR)), **kwarg)
+        textplot.text(0.1, 0.7,r'SN1 = {0:.2f}'.format(result.SN1), **kwarg)
+        textplot.text(0.1, 0.6,r'SN2 = {0:.2f}'.format(result.SN2), **kwarg)
+        textplot.text(0.1, 0.5,r'TDR = {0:.2f}'.format(result.TDR), **kwarg)
+        textplot.text(0.1, 0.4,r'SG = {}'.format(result.SG), **kwarg)
+        textplot.axis('off')
 
     return fig
 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
-result = get_fresult('teretere.txt', fmatch)
+result = get_fresult('bobo.txt', fmatch)
 
 tmp = result.copy()
 GCs = tmp[(tmp['VREL'] > 550) & 
@@ -276,75 +290,124 @@ GCs = tmp[(tmp['VREL'] > 550) &
              ((tmp['g_auto'] - tmp['i_auto']) > 0.) & 
              (tmp['i_auto'] > 19.)].reset_index(drop = True)
 
+classify = []
 for i in range(0,len(GCs)):
-  fig = plot_spectrum(GCs.iloc[i])
-  fig.savefig('/Volumes/VINCE/OAC/spectra/{}_{}.png'.format(GCs.ID.iloc[i],GCs.DETECT.iloc[i]), dpi = 200)
+  fig = plot_spectrum(GCs.iloc[i], correct = True, interactive = True)
+  plt.show()
+  classify.append(raw_input())
+  #fig.savefig('/Volumes/VINCE/OAC/spectra/{}_{}.png'.format(GCs.ID.iloc[i],GCs.DETECT.iloc[i]), dpi = 200)
 
+classify= pd.read_csv('/Volumes/VINCE/OAC/classify_GCs.csv', header = None)
+GCs['flag'] = classify 
+
+# - - - - - - - - - - - - - - - - - - - - - - - 
+# - - - - - - - - - - - - - - - - - - - - - - - 
+
+common = result.merge(GCs, on='ORIGINALFILE')
+single = result[~result.ORIGINALFILE.isin(common.ORIGINALFILE)]
+
+for i in tqdm(range(0,len(single))):
+  fig = plot_spectrum(single.iloc[i], correct = False, interactive = False)
+  fig.savefig('/Volumes/VINCE/OAC/everything/{}_{}.png'.format(single.ID.iloc[i],single.DETECT.iloc[i]), dpi = 200)
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
 stars = result[(result['VREL'] < 300) & (result['VREL'] > -300) &
                (result['VERR'] < 100) &
-               (result['VERR'] > 0) &
+               (result['VERR'] > 5) &
                (result['TDR'] > 2)]
-stars.to_csv('cat_stars.csv', index = False)
-stars[['RA_g', 'DEC_g']].to_csv('stars_RADEC.reg', index = False, header = None)
 
+#classify_stars = []
+for i in range(len(GCs) + 1,len(stars)):
+  fig = plot_spectrum(stars.iloc[i], correct = True, interactive = True)
+  plt.show()
+  classify_stars.append(raw_input())
+
+classify_stars = pd.read_csv('/Volumes/VINCE/OAC/classify_stars.csv', header = None)
+stars['flag'] = classify_stars.values
+
+# - - - - - - - - - - - - - - - - - - - - - - - 
+# - - - - - - - - - - - - - - - - - - - - - - - 
+
+real_GCs = GCs[GCs.flag == 'g']
+real_stars = stars[stars.flag == 's']
+GCsorted = real_GCs.sort('SN1', ascending = False)
+
+# - - - - - - - - - - - - - - - - - - - - - - - 
+# - - - - - - - - - - - - - - - - - - - - - - - 
+
+fig = plt.figure(figsize = (6,8)) 
+plt.xlim(5000,9000)
+
+specindex = range(0,100,10)
+offset = np.arange(0,len(specindex)) * 0.5
+ylim = [0.5, offset[-1] + 1.3]
+plt.ylim(ylim[0], ylim[1])
+
+plt.rc('text', usetex=True)
+plt.rc('font', family='serif')
+
+plt.xlabel(r'Restrame Wavelength [ \AA\ ]')
+plt.ylabel(r'Arbitrary flux')
+
+line_wave = [5175., 5892., 6562.8, 8498., 8542., 8662.] 
+    #       ['Mgb', 'NaD', 'Halpha', 'CaT', 'CaT', 'CaT']
+for line in line_wave:
+        x = [line, line]
+        y = [ylim[0], ylim[1]]
+        plt.plot(x, y, c= 'gray', linewidth=1.0)
+
+plt.annotate(r'CaT', xy=(8540.0, ylim[1] + 0.05), xycoords='data', annotation_clip=False)
+plt.annotate(r'H$\alpha$', xy=(6562.8, ylim[1] + 0.05), xycoords='data', annotation_clip=False)
+plt.annotate(r'NaD', xy=(5892., ylim[1] + 0.05), xycoords='data', annotation_clip=False)
+plt.annotate(r'Mg$\beta$', xy=(5175., ylim[1] + 0.05), xycoords='data', annotation_clip=False)
+
+for i,j in zip(specindex,offset):
+    iraf.noao.onedspec.continuum(input = GCsorted.ORIGINALFILE.iloc[i] + '[1]', output = '/Volumes/VINCE/OAC/continuum.fits',
+        type = 'ratio', naverage = '3', function = 'spline3',
+        order = '5', low_reject = '2.0', high_reject = '2.0', niterate = '10')
+
+    data = fits.getdata('/Volumes/VINCE/OAC/continuum.fits', 0)
+    
+    hdu = fits.open(GCsorted.ORIGINALFILE.iloc[i])
+    header1 = hdu[1].header
+    lamRange = header1['CRVAL1']  + np.array([0., header1['CD1_1'] * (header1['NAXIS1'] - 1)]) 
+    wavelength = np.linspace(lamRange[0],lamRange[1], header1['NAXIS1'])
+    hdu.close()
+
+    zp = 1. + (GCsorted.VREL.iloc[i] / 299792.458)
+  
+    plt.plot(wavelength/zp, gaussian_filter(data,2) + j, c = 'black', lw=1)
+    os.remove('/Volumes/VINCE/OAC/continuum.fits')
+
+
+
+# - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
 plt.figure()
-plt.scatter(GCs['g_auto'] - GCs['i_auto'], GCs['VREL'], s=13, c='red', edgecolor='none')
-plt.scatter(stars['g_auto'] - stars['i_auto'], stars['VREL'], s=13, c='green', edgecolor='none')
+plt.scatter(real_GCs['g_auto'] - real_GCs['i_auto'], real_GCs['VREL'], s=13, c='red', edgecolor='none')
+plt.scatter(real_stars['g_auto'] - real_stars['i_auto'], real_stars['VREL'], s=13, c='green', edgecolor='none')
 plt.xlabel('(g - i)')
 plt.ylabel('VREL')
 
 plt.figure()
 plt.scatter(fmatch['g_auto'] - fmatch['i_auto'], fmatch['g_auto'] - fmatch['r_auto'], s=10, c='gray', edgecolor='none', alpha = 0.5)
-plt.scatter(GCs['g_auto'] - GCs['i_auto'], GCs['g_auto'] - GCs['r_auto'], s=13, c='red', edgecolor='none')
-plt.scatter(stars['g_auto'] - stars['i_auto'], stars['g_auto'] - stars['r_auto'], s=13, c='green', edgecolor='none')
+plt.scatter(real_GCs['g_auto'] - real_GCs['i_auto'], real_GCs['g_auto'] - real_GCs['r_auto'], s=13, c='red', edgecolor='none')
+plt.scatter(real_stars['g_auto'] - real_stars['i_auto'], real_stars['g_auto'] - real_stars['r_auto'], s=13, c='green', edgecolor='none')
 plt.xlabel('(g - i)')
 plt.ylabel('(g - r)')
 
 plt.figure()
 plt.scatter(fmatch['g_auto'] - fmatch['r_auto'], fmatch['i_auto'], s=20, c='gray', edgecolor='none', alpha = 0.5)
-plt.scatter(GCs['g_auto'] - GCs['r_auto'], GCs['i_auto'], s=15, c='red', edgecolor='none')
-plt.scatter(stars['g_auto'] - stars['r_auto'], stars['i_auto'], s=15, c='green', edgecolor='none')
+plt.scatter(real_GCs['g_auto'] - real_GCs['r_auto'], real_GCs['i_auto'], s=15, c='red', edgecolor='none')
+plt.scatter(real_stars['g_auto'] - real_stars['r_auto'], real_stars['i_auto'], s=15, c='green', edgecolor='none')
 plt.ylim(13,24)
 plt.gca().invert_yaxis()
 plt.xlabel('(g - i)')
 plt.ylabel('i')
 
 # - - - - - - - - - - - - - - - - - - - - - - - 
-
-from astropy import units as u
-from astropy import coordinates as coords
-from astropy.coordinates import SkyCoord
-
-S_GCs =  pd.read_table('/Volumes/VINCE/OAC/fxcor/SchuberthGCs.csv', sep=r'\s+').replace(99.99, np.nan)
-S_GCs = S_GCs.drop_duplicates(['Rmag', 'C-R','HRV']).reset_index(drop = True)
-
-S_Stars =  pd.read_table('/Volumes/VINCE/OAC/fxcor/SchuberthStars.csv', sep=r'\s+').replace(99.99, np.nan)
-S_Stars = S_Stars.drop_duplicates(['Rmag', 'C-R', 'HRV']).reset_index(drop = True)
-
-cat1 = coords.SkyCoord(GCs['RA_g'], GCs['DEC_g'], unit=(u.degree, u.degree))
-cat2 = coords.SkyCoord(S_GCs['RA'], S_GCs['DEC'], unit=(u.degree, u.degree))
-
-index,dist2d, _ = cat1.match_to_catalog_sky(cat2)
-mask = dist2d.arcsec < 0.4
-new_idx = index[mask]
-
-GCsMatch = GCs.ix[mask].reset_index(drop = True)
-SchuberthMatch = S_GCs.ix[new_idx].reset_index(drop = True)
-
-x = GCsMatch['VREL'] 
-xerr = GCsMatch['VERR'] 
-y = SchuberthMatch['HRV'] 
-yerr = SchuberthMatch['e.1'] 
-
-plt.errorbar(x, y, yerr= yerr, xerr = xerr, fmt = 'o')
-plt.plot([800, 2200], [800, 2200])
-
-# ---------------------
-nicola = pd.read_csv('N1387_check_vel_stream.csv')
-resultClean.rename(columns = {'RA_g': 'RA', 'DEC_g': 'DEC'}, inplace = True)
-nicolaM = pd.merge(nicola, GCs, on = ['RA','DEC'])
 

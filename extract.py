@@ -58,9 +58,7 @@ def fillgaps(wp, data):
         f = interp1d(x, y, kind='linear')
     
         data[gap.pixels] = f(gap.pixels)
-
     return data
-
 
 def galaxy_star(d):
     smed = pd.rolling_median(d, 5)
