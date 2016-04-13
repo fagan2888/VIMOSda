@@ -10,12 +10,14 @@ from astropy.io import fits
 from pyraf import iraf
 import os
 iraf.noao()
-
-#rc('font',**{'family':'sans-serif','sans-serif':['Helvetica']})
-#rc('text', usetex=True)
+import functools
+import operator
+import numpy as np
+from matplotlib.pylab import plt
 
 fmatch = pd.read_table('/Volumes/VINCE/OAC/master_adp_ugri_clean.txt', delim_whitespace = True)
 fmatch = fmatch.replace((-9999.0, -8888.0), np.nan)
+par = [54.620941, -35.450657, 64, 0.9]
 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
@@ -34,7 +36,18 @@ def mad(points, thresh=3.5):
 # - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
-def fxcor_subplot(result):
+residuals = pd.read_csv('/Volumes/VINCE/OAC/VIMOSda/residuals.txt', 
+                          delim_whitespace = True, comment = '#')
+residuals.index = residuals.Mask
+
+def correct_vel(maskid, multiplex):
+    if multiplex == 0:
+        rms = residuals.loc[maskid]['M1']
+    else:
+        rms = residuals.loc[maskid]['M3']
+    return (rms * 90.4)
+
+def fxcor_subplot(result, GCs, stars):
         '''
         Makes subplot of TDR vs VERR and VREL.
         Returns a figure object
@@ -54,28 +67,44 @@ def fxcor_subplot(result):
         plt.setp(R_vel.get_xticklabels(), visible=False)
         
         x = result.TDR
-        y = result.VREL
-        R_vel.scatter(x, y, s=10, c='gray', edgecolor='none', alpha = 0.6)
+        y = result.VREL_helio
+        R_vel.scatter(x, y, s=10, c='gray', edgecolor='none', alpha = 0.6, label = 'All')
+
+        x = GCs.TDR
+        y = GCs.VREL_helio
+        R_vel.scatter(x, y, s=11, c='orange', edgecolor='none', alpha = 0.8, label = 'GCs')
+
+        x = stars.TDR
+        y = stars.VREL_helio
+        R_vel.scatter(x, y, s=11, c='green', edgecolor='none', alpha = 0.8, label = 'Stars')
+
         R_vel.set_xlim(1,20)
         R_vel.set_ylim(-2000,5000)
         R_vel.set_ylabel(r'$v$ $[km \, s^{-1}]$')
         plt.setp(R_vel.get_yticklabels()[0], visible=False)  
         
-        
+        x = result.TDR
         y = result.VERR
+        R_err.scatter(x, y,s=10, c='gray', edgecolor='none', alpha = 0.6)
+
+        x = GCs.TDR
+        y = GCs.VERR
+        R_err.scatter(x, y,s=11, c='orange', edgecolor='none', alpha = 0.8)
+
+        x = stars.TDR
+        y = stars.VERR
+        R_err.scatter(x, y,s=11, c='green', edgecolor='none', alpha = 0.8)
+
         R_err.set_ylim(2,80)
         R_err.set_xlim(1,20)
         R_err.set_ylabel(r'$\delta v$ $[km \, s^{-1}]$')
         R_err.set_xlabel(r'TDR')
-        R_err.scatter(x, y,s=10, c='gray', edgecolor='none', alpha = 0.6)
         plt.setp(R_err.get_yticklabels()[-1], visible=False)
+        R_vel.legend()
         
-        R_hist.hist(result.TDR, range = (1,20), bins = 50, normed=True,
-                                 color='black', histtype='step')
+        R_hist.hist([GCs.TDR,stars.TDR], range = (1,20), bins = 50, normed=True,
+                                 color=['orange','green'])
         return fig
-
-# - - - - - - - - - - - - - - - - - - - - - - - 
-# - - - - - - - - - - - - - - - - - - - - - - - 
 
 def fetchfrom_fits(fitsfile):
         '''
@@ -87,15 +116,36 @@ def fetchfrom_fits(fitsfile):
         SN1 = header['SN1']
         SG = header['sg_norm']
         SN2 = header['SN2']
+        MULTIPLEX = header['MULTIPLEX']
 
         vhelio = utilities.get_vhelio(header)
 
-        output = [SN1, SN2, SG, vhelio]
+        output = [SN1, SN2, SG, vhelio, MULTIPLEX]
 
         return output
 
-# - - - - - - - - - - - - - - - - - - - - - - - 
-# - - - - - - - - - - - - - - - - - - - - - - - 
+def getXYR(ra,dec, par):
+
+    to_deg = 180 / np.pi
+    to_rad = np.pi / 180.
+    
+    ra0,dec0,PA,axial = par
+    
+    ra = ra * np.pi / 180.
+    dec = dec * np.pi / 180.
+    ra0 = ra0 * np.pi / 180.
+    dec0 = dec0 * np.pi / 180.
+    PA = PA * np.pi / 180.
+    
+    xi = np.sin(ra - ra0) * np.cos(dec) * to_deg * 3600
+    eta = ((np.sin(dec) * np.cos(dec0)) - np.cos(ra - ra0) * np.cos(dec) * np.sin(dec0) ) * to_deg * 3600
+
+    X = -xi * np.sin(PA) - eta*np.cos(PA)
+    Y = -xi * np.cos(PA) + eta*np.sin(PA)
+    
+    R = np.sqrt((Y**2 / axial) + (X**2 * axial))
+        
+    return X, Y, R
 
 def get_fresult(filename, fmatch):
 
@@ -126,7 +176,7 @@ def get_fresult(filename, fmatch):
 
           cat['ORIGINALFILE'] = '/Volumes/VINCE/OAC/extracted_new/' + cat.ID + '_' + cat.DETECT.astype(str) + '.fits'
           
-          grouped = pd.DataFrame(columns = append(cat.columns, ['OUTLIERS', 'SCATTER']))
+          grouped = pd.DataFrame(columns = np.append(cat.columns, ['OUTLIERS', 'SCATTER']))
           tempnum = 40
           
           for i in tqdm(range(0,(len(cat)/tempnum))):
@@ -159,20 +209,60 @@ def get_fresult(filename, fmatch):
   
           result = pd.merge(grouped, fmatch, on = ['ID'])
 
+          print 'Computing heliocentric velocity . . .'
           toadd = np.array(map(lambda x: fetchfrom_fits(x), result['ORIGINALFILE']))
+          
           result['SN1'] = toadd[:,0]
           result['SN2'] = toadd[:,1]
-          result['SG'] = toadd[:,2] 
-          result['vhelio'] = toadd[:,3]
 
-          result['VREL_helio'] = result['VREL'] + result['vhelio']
+          print 'Appending SG classifier . . .'
+          result['SG'] = toadd[:,2] 
+
+          print 'Appending Heliocentric velocity correction . . .'
+          result['vhelio'] = toadd[:,3]
+          result['MULTIPLEX'] = toadd[:,4]
           
+          print 'Appending misalignment correction . . .'
+          result['maskid'] = pd.Series('fnx' + result.ID.str[0:2] + 'q' + result.ID.str[2])
+          result['correction'] = result.apply(lambda x: correct_vel(x['maskid'], x['MULTIPLEX']), axis=1)
+          
+          result['VREL_helio'] = result['VREL'] + result['vhelio'] - result['correction']
+          XYR = result.apply(lambda x: getXYR(x['RA_g'], x['DEC_g'], par), axis=1).values
+          
+          X = []
+          Y = []
+          R = []
+
+          for i in range(0,len(XYR)):
+            X.append(XYR[i][0])
+            Y.append(XYR[i][1])
+            R.append(XYR[i][2])
+
+          result['X'] = X
+          result['Y'] = Y
+          result['R'] = R
+
           resultClean = result[np.isfinite(result['RA_g'])]
+
+          resultClean['obj_ID'] = resultClean.ID + '_' + resultClean.DETECT.astype(int).astype(str)
+
 
           return resultClean
 
-# - - - - - - - - - - - - - - - - - - - - - - - 
-# - - - - - - - - - - - - - - - - - - - - - - - 
+def Michele_spectra(GCssorted):
+  for i in range(0,100):
+    hdu = fits.open(GCssorted['ORIGINALFILE'].iloc[i])
+    header1 = hdu[1].header
+    data = hdu[1].data
+    hdu.close()
+    lamRange = header1['CRVAL1']  + np.array([0., header1['CD1_1'] * (header1['NAXIS1'] - 1)])
+    zp = 1. + (GCssorted['VREL'].iloc[i] / 299792.458)
+    wavelength = np.linspace(lamRange[0],lamRange[1], header1['NAXIS1']) / zp
+
+    df = pd.DataFrame({'wavelength':wavelength, 'counts':data})
+    df.to_csv('/Volumes/VINCE/OAC/highSN/{}.csv'.format(GCssorted['ID'].iloc[i]))
+    plt.plot(wavelength,data)
+  return df  
 
 def plot_spectrum(result, correct = True, interactive = False):
     
@@ -261,27 +351,75 @@ def plot_spectrum(result, correct = True, interactive = False):
     ax_red.set_yticks([]) 
 
     ### Plot text
-    if interactive:
-        textplot = fig.add_subplot(gs[80:200,105:130])
-        kwarg = {'va' : 'center', 'ha' : 'left', 'size' : 'medium'}
-        textplot.text(0.1, 1.0,r'ID = {} \, {}'.format(result.ID, int(result.DETECT)),**kwarg)
-        textplot.text(0.1, 0.9,r'$v =$ {}'.format(int(result.VREL)), **kwarg)
-        textplot.text(0.1, 0.8,r'$\delta \, v = $ {}'.format(int(result.VERR)), **kwarg)
-        textplot.text(0.1, 0.7,r'SN1 = {0:.2f}'.format(result.SN1), **kwarg)
-        textplot.text(0.1, 0.6,r'SN2 = {0:.2f}'.format(result.SN2), **kwarg)
-        textplot.text(0.1, 0.5,r'TDR = {0:.2f}'.format(result.TDR), **kwarg)
-        textplot.text(0.1, 0.4,r'SG = {}'.format(result.SG), **kwarg)
-        textplot.axis('off')
+    #if interactive:
+    textplot = fig.add_subplot(gs[80:200,105:130])
+    kwarg = {'va' : 'center', 'ha' : 'left', 'size' : 'medium'}
+    textplot.text(0.1, 1.0,r'ID = {} \, {}'.format(result.ID, int(result.DETECT)),**kwarg)
+    textplot.text(0.1, 0.9,r'$v =$ {}'.format(int(result.VREL)), **kwarg)
+    textplot.text(0.1, 0.8,r'$\delta \, v = $ {}'.format(int(result.VERR)), **kwarg)
+    textplot.text(0.1, 0.7,r'SN1 = {0:.2f}'.format(result.SN1), **kwarg)
+    textplot.text(0.1, 0.6,r'SN2 = {0:.2f}'.format(result.SN2), **kwarg)
+    textplot.text(0.1, 0.5,r'TDR = {0:.2f}'.format(result.TDR), **kwarg)
+    textplot.text(0.1, 0.4,r'SG = {}'.format(result.SG), **kwarg)
+    textplot.axis('off')
 
     return fig
 
+def plot_piledspectra():
+    fig = plt.figure(figsize = (6,8)) 
+    plt.xlim(5000,9000)
+    
+    specindex = range(0,100,10)
+    offset = np.arange(0,len(specindex)) * 0.5
+    ylim = [0.5, offset[-1] + 1.3]
+    plt.ylim(ylim[0], ylim[1])
+    
+    plt.rc('text', usetex=True)
+    plt.rc('font', family='serif')
+    
+    plt.xlabel(r'Restrame Wavelength [ \AA\ ]')
+    plt.ylabel(r'Flux')
+    
+    line_wave = [5175., 5892., 6562.8, 8498., 8542., 8662.] 
+        #       ['Mgb', 'NaD', 'Halpha', 'CaT', 'CaT', 'CaT']
+    for line in line_wave:
+            x = [line, line]
+            y = [ylim[0], ylim[1]]
+            plt.plot(x, y, c= 'gray', linewidth=1.0)
+    
+    plt.annotate(r'CaT', xy=(8540.0, ylim[1] + 0.05), xycoords='data', annotation_clip=False)
+    plt.annotate(r'H$\alpha$', xy=(6562.8, ylim[1] + 0.05), xycoords='data', annotation_clip=False)
+    plt.annotate(r'NaD', xy=(5892., ylim[1] + 0.05), xycoords='data', annotation_clip=False)
+    plt.annotate(r'Mg$\beta$', xy=(5175., ylim[1] + 0.05), xycoords='data', annotation_clip=False)
+    
+    for i,j in zip(specindex,offset):
+        iraf.noao.onedspec.continuum(input = GCssorted.ORIGINALFILE.iloc[i] + '[1]', output = '/Volumes/VINCE/OAC/continuum.fits',
+            type = 'ratio', naverage = '3', function = 'spline3',
+            order = '5', low_reject = '2.0', high_reject = '2.0', niterate = '10')
+    
+        data = fits.getdata('/Volumes/VINCE/OAC/continuum.fits', 0)
+        
+        hdu = fits.open(GCssorted.ORIGINALFILE.iloc[i])
+        header1 = hdu[1].header
+        lamRange = header1['CRVAL1']  + np.array([0., header1['CD1_1'] * (header1['NAXIS1'] - 1)]) 
+        wavelength = np.linspace(lamRange[0],lamRange[1], header1['NAXIS1'])
+        hdu.close()
+    
+        zp = 1. + (GCssorted.VREL.iloc[i] / 299792.458)
+      
+        plt.plot(wavelength/zp, gaussian_filter(data,2) + j, c = 'black', lw=1)
+        os.remove('/Volumes/VINCE/OAC/continuum.fits')
+
 # - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
-result = get_fresult('bobo.txt', fmatch)
+#result = get_fresult('bobo.txt', fmatch)
+#result.to_csv('/Volumes/VINCE/OAC/result.csv', index=False)
+
+result = pd.read_csv('/Volumes/VINCE/OAC/result.csv')
 
 tmp = result.copy()
-GCs = tmp[(tmp['VREL'] > 550) & 
+candidates = tmp[(tmp['VREL'] > 450) & 
              (tmp['VREL'] < 2500) &
              (tmp['VERR'] > 10) & 
              (tmp['VERR'] < 150) & 
@@ -290,124 +428,173 @@ GCs = tmp[(tmp['VREL'] > 550) &
              ((tmp['g_auto'] - tmp['i_auto']) > 0.) & 
              (tmp['i_auto'] > 19.)].reset_index(drop = True)
 
-classify = []
-for i in range(0,len(GCs)):
-  fig = plot_spectrum(GCs.iloc[i], correct = True, interactive = True)
-  plt.show()
-  classify.append(raw_input())
-  #fig.savefig('/Volumes/VINCE/OAC/spectra/{}_{}.png'.format(GCs.ID.iloc[i],GCs.DETECT.iloc[i]), dpi = 200)
+#classify = []
+#for i in range(0,len(candidates)):
+#  fig = plot_spectrum(candidates.iloc[i], correct = True, interactive = True)
+#  plt.show()
+#  classify.append(raw_input())
+#  fig.savefig('/Volumes/VINCE/OAC/spectra/{}_{}.png'.format(candidates.ID.iloc[i],candidates.DETECT.iloc[i]), dpi = 200)
 
-classify= pd.read_csv('/Volumes/VINCE/OAC/classify_GCs.csv', header = None)
-GCs['flag'] = classify 
-
-# - - - - - - - - - - - - - - - - - - - - - - - 
-# - - - - - - - - - - - - - - - - - - - - - - - 
-
-common = result.merge(GCs, on='ORIGINALFILE')
-single = result[~result.ORIGINALFILE.isin(common.ORIGINALFILE)]
-
-for i in tqdm(range(0,len(single))):
-  fig = plot_spectrum(single.iloc[i], correct = False, interactive = False)
-  fig.savefig('/Volumes/VINCE/OAC/everything/{}_{}.png'.format(single.ID.iloc[i],single.DETECT.iloc[i]), dpi = 200)
-
+classify = pd.read_csv('/Volumes/VINCE/OAC/classify_GCs_total.csv')
+classify.columns = ['obj_ID', 'flag'] 
+candidates = pd.merge(candidates,classify,on='obj_ID')
+marginals = candidates[candidates['flag'] == 'm']
 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
-stars = result[(result['VREL'] < 300) & (result['VREL'] > -300) &
+stars_candidates = result[(result['VREL'] < 450) & (result['VREL'] > -450) &
                (result['VERR'] < 100) &
                (result['VERR'] > 5) &
-               (result['TDR'] > 2)]
+               (result['TDR'] > 2)].reset_index(drop = True)
 
-#classify_stars = []
-for i in range(len(GCs) + 1,len(stars)):
-  fig = plot_spectrum(stars.iloc[i], correct = True, interactive = True)
-  plt.show()
-  classify_stars.append(raw_input())
+#classify_stars_candidates = []
+#for i in range(0,len(stars_candidates)):
+#  fig = plot_spectrum(stars_candidates.iloc[i], correct = True, interactive = True)
+#  plt.show()
+#  classify_stars_candidates.append(raw_input())
 
-classify_stars = pd.read_csv('/Volumes/VINCE/OAC/classify_stars.csv', header = None)
-stars['flag'] = classify_stars.values
-
-# - - - - - - - - - - - - - - - - - - - - - - - 
-# - - - - - - - - - - - - - - - - - - - - - - - 
-
-real_GCs = GCs[GCs.flag == 'g']
-real_stars = stars[stars.flag == 's']
-GCsorted = real_GCs.sort('SN1', ascending = False)
+classify_stars_candidates = pd.read_csv('/Volumes/VINCE/OAC/classify_stars_all.csv')
+classify_stars_candidates.columns = ['obj_ID', 'flag'] 
+stars_candidates = pd.merge(stars_candidates,classify_stars_candidates,on='obj_ID')
 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
-fig = plt.figure(figsize = (6,8)) 
-plt.xlim(5000,9000)
+GCs = candidates[candidates.flag == 'g']
+GCssorted = GCs.sort_values('SN1', ascending = False)
+stars = stars_candidates[stars_candidates.flag == 's']
 
-specindex = range(0,100,10)
-offset = np.arange(0,len(specindex)) * 0.5
-ylim = [0.5, offset[-1] + 1.3]
-plt.ylim(ylim[0], ylim[1])
+# - - - - - - - - - - - - - - - - - - - - - - - 
+# - - - - - - - - - - - - - - - - - - - - - - - 
+
+f, ax = plt.subplots(2, 3, sharex='col', sharey='row')
 
 plt.rc('text', usetex=True)
 plt.rc('font', family='serif')
 
-plt.xlabel(r'Restrame Wavelength [ \AA\ ]')
-plt.ylabel(r'Arbitrary flux')
-
-line_wave = [5175., 5892., 6562.8, 8498., 8542., 8662.] 
-    #       ['Mgb', 'NaD', 'Halpha', 'CaT', 'CaT', 'CaT']
-for line in line_wave:
-        x = [line, line]
-        y = [ylim[0], ylim[1]]
-        plt.plot(x, y, c= 'gray', linewidth=1.0)
-
-plt.annotate(r'CaT', xy=(8540.0, ylim[1] + 0.05), xycoords='data', annotation_clip=False)
-plt.annotate(r'H$\alpha$', xy=(6562.8, ylim[1] + 0.05), xycoords='data', annotation_clip=False)
-plt.annotate(r'NaD', xy=(5892., ylim[1] + 0.05), xycoords='data', annotation_clip=False)
-plt.annotate(r'Mg$\beta$', xy=(5175., ylim[1] + 0.05), xycoords='data', annotation_clip=False)
-
-for i,j in zip(specindex,offset):
-    iraf.noao.onedspec.continuum(input = GCsorted.ORIGINALFILE.iloc[i] + '[1]', output = '/Volumes/VINCE/OAC/continuum.fits',
-        type = 'ratio', naverage = '3', function = 'spline3',
-        order = '5', low_reject = '2.0', high_reject = '2.0', niterate = '10')
-
-    data = fits.getdata('/Volumes/VINCE/OAC/continuum.fits', 0)
-    
-    hdu = fits.open(GCsorted.ORIGINALFILE.iloc[i])
-    header1 = hdu[1].header
-    lamRange = header1['CRVAL1']  + np.array([0., header1['CD1_1'] * (header1['NAXIS1'] - 1)]) 
-    wavelength = np.linspace(lamRange[0],lamRange[1], header1['NAXIS1'])
-    hdu.close()
-
-    zp = 1. + (GCsorted.VREL.iloc[i] / 299792.458)
-  
-    plt.plot(wavelength/zp, gaussian_filter(data,2) + j, c = 'black', lw=1)
-    os.remove('/Volumes/VINCE/OAC/continuum.fits')
+ax[0][0].scatter(result['g_auto'] - result['r_auto'], result['g_auto'] - result['i_auto'], 
+                s=5, c='gray', edgecolor='none', alpha = 0.5)
+ax[0][0].scatter(GCs['g_auto'] - GCs['r_auto'], GCs['g_auto'] - GCs['i_auto'], 
+                s=13, c='red', edgecolor='none')
+ax[0][0].scatter(stars['g_auto'] - stars['r_auto'], stars['g_auto'] - stars['i_auto'], 
+                s=10,  c = 'green', edgecolor='none')
+ax[0][0].set_xlabel('(g - r)')
+ax[0][0].set_ylabel('(g - i)')
+ax[0][0].set_xlim(-0.2,2)
+ax[0][0].set_ylim(0,3)
 
 
+ax[1][0].scatter(result['g_auto'] - result['r_auto'], result['u_auto'] - result['g_auto'], 
+                s=5, c='gray', edgecolor='none', alpha = 0.5)
+ax[1][0].scatter(GCs['g_auto'] - GCs['r_auto'], GCs['u_auto'] - GCs['g_auto'], 
+                s=13, c='red', edgecolor='none')
+ax[1][0].scatter(stars['g_auto'] - stars['r_auto'], stars['u_auto'] - stars['g_auto'], 
+                s=10, c='green', edgecolor='none')
+ax[1][0].set_xlabel('(g - r)')
+ax[1][0].set_ylabel('(u - g)')
+ax[1][0].set_xlim(-0.2,2)
+ax[1][0].set_ylim(0.,3)
+
+
+ax[0][1].scatter(result['i_auto'], result['g_auto'] - result['i_auto'], 
+                s=5, c='gray', edgecolor='none', alpha = 0.5)
+ax[0][1].scatter(GCs['i_auto'], GCs['g_auto'] - GCs['i_auto'], 
+                s=13, c='red', edgecolor='none')
+ax[0][1].scatter(stars['i_auto'], stars['g_auto'] - stars['i_auto'], 
+                s=10, c='green', edgecolor='none')
+ax[0][1].set_xlabel('i')
+ax[0][1].set_ylabel('(g - i)')
+ax[0][1].set_xlim(16,23.)
+ax[0][1].set_ylim(0.,3)
+
+ax[1][1].scatter(result['i_auto'], result['u_auto'] - result['g_auto'], 
+                s=5, c='gray', edgecolor='none', alpha = 0.5)
+ax[1][1].scatter(GCs['i_auto'], GCs['u_auto'] - GCs['g_auto'], 
+                s=13, c='red', edgecolor='none')
+ax[1][1].scatter(stars['i_auto'], stars['u_auto'] - stars['g_auto'], 
+                s=10, c='green',  edgecolor='none')
+ax[1][1].set_xlabel('i')
+ax[1][1].set_ylabel('(u - g)')
+ax[1][1].set_xlim(16,23)
+ax[1][1].set_ylim(0.5,3)
+
+ax[1][2].scatter(GCs['VREL_helio'], GCs['u_auto'] - GCs['g_auto'], s=13, c='red', edgecolor='none')
+ax[1][2].scatter(stars['VREL_helio'], stars['u_auto'] - stars['g_auto'], s=13, c='green', marker='x', edgecolor='none')
+ax[1][2].set_xlabel(r'$v [km s^{-1}]$')
+ax[1][2].set_ylabel('(u - g)')
+ax[1][2].set_xticks(np.arange(-500, 2600,500))
+
+ax[0][2].scatter(GCs['VREL_helio'], GCs['g_auto'] - GCs['i_auto'], s=13, c='red', edgecolor='none')
+ax[0][2].scatter(stars['VREL_helio'], stars['g_auto'] - stars['i_auto'], s=13, c='green', marker='x', edgecolor='none')
+ax[0][2].set_xlabel(r'$v [km s^{-1}]$')
+ax[0][2].set_ylabel('(g - i)')
+ax[0][2].set_xticks(np.arange(-500, 2600,500))
 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 # - - - - - - - - - - - - - - - - - - - - - - - 
 
-plt.figure()
-plt.scatter(real_GCs['g_auto'] - real_GCs['i_auto'], real_GCs['VREL'], s=13, c='red', edgecolor='none')
-plt.scatter(real_stars['g_auto'] - real_stars['i_auto'], real_stars['VREL'], s=13, c='green', edgecolor='none')
-plt.xlabel('(g - i)')
-plt.ylabel('VREL')
+x = GCs['R'].copy().sort_values()
+y = np.arange(1,len(GCs)+1)
+plt.plot(x,y,label='GCs')
+
+x = stars['R'].copy().sort_values()
+y = np.arange(1,len(stars)+1)
+plt.plot(x,y,label='Stars')
+
+plt.legend()
+
+# - - - - - - - - - - - - - - - - - - - - - - - 
+# - - - - - - - - - - - - - - - - - - - - - - - 
+
+
+mask = (((result['g_auto'] - result['r_auto']) < (0.2 + 0.6 * (result['g_auto'] - result['i_auto']))) &
+        ((result['g_auto'] - result['r_auto']) > (-0.2 + 0.6 * (result['g_auto'] - result['i_auto']))) &
+        ((result['g_auto'] - result['i_auto']) > 0.5) & 
+        ((result['g_auto'] - result['i_auto']) < 1.3) &
+        ((result['i_auto']) < 24))
+
+subset = result[mask]
+subset = subset.sample(n=1000)
 
 plt.figure()
-plt.scatter(fmatch['g_auto'] - fmatch['i_auto'], fmatch['g_auto'] - fmatch['r_auto'], s=10, c='gray', edgecolor='none', alpha = 0.5)
-plt.scatter(real_GCs['g_auto'] - real_GCs['i_auto'], real_GCs['g_auto'] - real_GCs['r_auto'], s=13, c='red', edgecolor='none')
-plt.scatter(real_stars['g_auto'] - real_stars['i_auto'], real_stars['g_auto'] - real_stars['r_auto'], s=13, c='green', edgecolor='none')
+plt.scatter(result['g_auto'] - result['i_auto'], result['g_auto'] - result['r_auto'], s=10, c='gray', edgecolor='none', alpha = 0.5)
+plt.scatter(subset['g_auto'] - subset['i_auto'], subset['g_auto'] - subset['r_auto'], s=20, c='blue', edgecolor='none')
+plt.scatter(GCs['g_auto'] - GCs['i_auto'], GCs['g_auto'] - GCs['r_auto'], s=10, c='red', edgecolor='none')
 plt.xlabel('(g - i)')
 plt.ylabel('(g - r)')
+plt.xlim(-1,4)
+plt.ylim(-1,4)
 
 plt.figure()
-plt.scatter(fmatch['g_auto'] - fmatch['r_auto'], fmatch['i_auto'], s=20, c='gray', edgecolor='none', alpha = 0.5)
-plt.scatter(real_GCs['g_auto'] - real_GCs['r_auto'], real_GCs['i_auto'], s=15, c='red', edgecolor='none')
-plt.scatter(real_stars['g_auto'] - real_stars['r_auto'], real_stars['i_auto'], s=15, c='green', edgecolor='none')
+plt.scatter(subset['g_auto'] - subset['r_auto'], subset['r_auto'], s=30, c='blue', edgecolor='none')
+plt.scatter(GCs['g_auto'] - GCs['r_auto'], GCs['i_auto'], s=8, c='red', edgecolor='none')
 plt.ylim(13,24)
 plt.gca().invert_yaxis()
 plt.xlabel('(g - i)')
 plt.ylabel('i')
 
-# - - - - - - - - - - - - - - - - - - - - - - - 
+plt.figure()
+plt.scatter(result['g_auto'] - result['u_auto'], result['g_auto'] - result['r_auto'], s=10, c='gray', edgecolor='none', alpha = 0.5)
+plt.scatter(subset['g_auto'] - subset['u_auto'], subset['g_auto'] - subset['r_auto'], s=20, c='blue', edgecolor='none')
+plt.scatter(GCs['g_auto'] - GCs['u_auto'], GCs['g_auto'] - GCs['r_auto'], s=10, c='red', edgecolor='none')
+plt.scatter(galaxies['g_auto'] - galaxies['u_auto'], galaxies['g_auto'] - galaxies['r_auto'], s=10, c='green', edgecolor='none')
+plt.xlabel('(g - u)')
+plt.ylabel('(g - r)')
+plt.xlim(-4,3)
+plt.ylim(-1,2)
+
+
+for i in tqdm(range(0,len(subset))):
+  fig = plot_spectrum(subset.iloc[i], correct = True, interactive = False)
+  fig.savefig('/Volumes/VINCE/OAC/class_test/{}_{}.png'.format(subset.ID.iloc[i],subset.DETECT.iloc[i]), dpi = 300)
+
+dir = '/Volumes/VINCE/OAC/class_test/' 
+groups = [dir + 'group_1',dir + 'group_2',dir + 'group_3',dir + 'group_4',dir + 'group_5',dir + 'group_6']
+images = glob.glob('/Volumes/VINCE/OAC/class_test/*png*')
+
+for i,g in enumerate(groups):
+  for f in images[200*i : 200*(i+1)]:
+    shutil.copy(f,g)
+
 

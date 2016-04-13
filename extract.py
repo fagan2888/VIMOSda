@@ -83,7 +83,6 @@ def fill_continuum(datafile, mask, wavelength):
 
     return data
 
-
 def modify_header(head, tab, index, keys, row): 
      '''
      Append the entries of the *OBJECT_SCI_TABLE.fits table to the fits header.
